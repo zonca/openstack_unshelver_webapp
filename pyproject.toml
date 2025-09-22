@@ -1,0 +1,15 @@
+[project]
+name = "openstack-unshelver-webapp"
+version = "0.1.0"
+description = "OpenStack instance unshelver web UI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "openstacksdk>=4.7.1",
+    "pydantic>=2.11.9",
+    "python-fasthtml",
+]
+
+[tool.uv.sources]
+python-fasthtml = { git = "https://github.com/AnswerDotAI/fasthtml" }

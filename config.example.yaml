@@ -1,0 +1,41 @@
+app:
+  title: "OpenStack Unshelver"
+  secret_key: "change-me-please-123456"
+  poll_interval_seconds: 10
+  http_probe_timeout: 5.0
+  http_probe_attempts: 12
+
+github:
+  client_id: "your-github-client-id"
+  client_secret: "your-github-client-secret"
+  redirect_uri: "http://localhost:5001/auth/callback"
+  organization: "your-github-organization"
+  scope:
+    - read:user
+    - read:org
+
+openstack:
+  auth_url: "https://openstack.example.com:5000/v3"
+  username: "openstack-user"
+  password: "openstack-password"
+  project_name: "project"
+  user_domain_name: "Default"
+  project_domain_name: "Default"
+  region_name: "RegionOne"
+
+buttons:
+  - id: "app-one"
+    label: "Unshelve App One"
+    description: "Bring the App One VM online and check its web UI."
+    instance_name: "app-one-instance"
+    preferred_networks:
+      - public
+    url_scheme: "https"
+    port: 443
+    healthcheck_path: "/health"
+    launch_path: "/"
+    verify_tls: false
+  - id: "app-two"
+    label: "Unshelve App Two"
+    description: "Recovery control for App Two."
+    instance_name: "app-two-instance"
