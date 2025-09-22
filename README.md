@@ -30,6 +30,13 @@ uv run python app.py
 By default the app listens on `http://localhost:5001`. Adjust the `redirect_uri`
 accordingly in GitHub OAuth settings and the configuration file.
 
+## Testing
+Run the unit tests with:
+
+```bash
+uv run pytest
+```
+
 ## Notes
 - The web UI keeps state in-memory; if you run multiple processes you should add a
   shared backing store for task status.

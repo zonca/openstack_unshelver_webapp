@@ -13,3 +13,9 @@ dependencies = [
 
 [tool.uv.sources]
 python-fasthtml = { git = "https://github.com/AnswerDotAI/fasthtml" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]
