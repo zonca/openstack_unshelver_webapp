@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional
+import ipaddress
+import logging
+from typing import Any, Iterable, Optional
 
 from openstack import connection
 from openstack.compute.v2.server import Server
-from openstack.exceptions import ResourceNotFound
+from openstack.exceptions import ResourceNotFound, SDKException
 
 from .config import ButtonSettings, OpenStackSettings
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,6 +45,7 @@ class OpenStackClient:
 
     def __init__(self, settings: OpenStackSettings) -> None:
         self._settings = settings
+        self._dns_cache: dict[str, Optional[str]] = {}
 
     def create_connection(self) -> connection.Connection:
         payload = self._settings.model_dump(exclude_none=True, mode="json")
@@ -74,14 +80,58 @@ class OpenStackClient:
         address = select_address(server, button.preferred_networks)
         if not address:
             return None
+        hostname = self._resolve_dns_name(address) or address
         return InstanceEndpoint(
-            address=address,
+            address=hostname,
             scheme=button.url_scheme,
             port=button.port,
             launch_path=button.launch_path or "/",
             healthcheck_path=button.healthcheck_path or "/",
             verify_tls=button.verify_tls,
         )
+
+    def _resolve_dns_name(self, address: str) -> Optional[str]:
+        """Look up the DNS name for an IP address via Designate if possible."""
+
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            # Already a hostname
+            return address
+
+        if address in self._dns_cache:
+            return self._dns_cache[address]
+
+        result: Optional[str] = None
+        conn = self.create_connection()
+        try:
+            result = self._lookup_designate_record(conn, address)
+        except SDKException as exc:  # pragma: no cover - requires live OpenStack
+            _LOGGER.debug("Designate lookup failed for %s: %s", address, exc, exc_info=True)
+        finally:
+            conn.close()
+
+        if result:
+            result = result.rstrip(".")
+        self._dns_cache[address] = result
+        return result
+
+    @staticmethod
+    def _lookup_designate_record(conn: connection.Connection, address: str) -> Optional[str]:
+        for zone in conn.dns.zones():  # pragma: no cover - requires live OpenStack
+            zone_id = _extract(zone, "id")
+            if not zone_id:
+                continue
+            for recordset in conn.dns.recordsets(zone_id):
+                record_type = _extract(recordset, "type")
+                if (record_type or "").upper() != "A":
+                    continue
+                records = _extract(recordset, "records") or []
+                if address in records:
+                    name = _extract(recordset, "name")
+                    if name:
+                        return name
+        return None
 
 
 def select_address(server: Server, preferred_networks: Optional[Iterable[str]] = None) -> Optional[str]:
@@ -142,3 +192,11 @@ def format_host(address: str) -> str:
     if ":" in address and not address.startswith("["):
         return f"[{address}]"
     return address
+
+
+def _extract(item: Any, attr: str) -> Any:
+    if hasattr(item, attr):
+        return getattr(item, attr)
+    if isinstance(item, dict):
+        return item.get(attr)
+    return None

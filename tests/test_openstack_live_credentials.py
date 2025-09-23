@@ -49,6 +49,17 @@ def test_openstack_credentials_authorize_and_list_servers(capsys: CaptureFixture
             if others:
                 details = ", ".join(f"{name} ({status})" for name, status in sorted(others))
                 print("Other statuses:", details)
+
+            for button in settings.buttons:
+                server = client.find_server(button.instance_name)
+                if not server:
+                    print(f"{button.id}: instance '{button.instance_name}' not found")
+                    continue
+                endpoint = client.build_endpoint(server, button)
+                if endpoint:
+                    print(f"{button.id}: launch {endpoint.launch_url}")
+                else:
+                    print(f"{button.id}: instance '{button.instance_name}' missing reachable address")
     except SDKException as exc:
         pytest.fail(f"OpenStack live credential check failed: {exc}")
     finally:
