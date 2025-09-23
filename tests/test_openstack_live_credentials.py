@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from pytest import CaptureFixture
 from openstack.exceptions import SDKException
 
 from openstack_unshelver_webapp.config import ConfigurationError, load_settings
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_openstack_credentials_authorize_and_list_servers() -> None:
+def test_openstack_credentials_authorize_and_list_servers(capsys: CaptureFixture[str]) -> None:
     """Ensure local OpenStack credentials in config.yaml are valid."""
 
     try:
@@ -42,11 +43,12 @@ def test_openstack_credentials_authorize_and_list_servers() -> None:
             else:
                 others.append((name, status))
 
-        print("Running instances:", ", ".join(sorted(running)) or "<none>")
-        print("Shelved instances:", ", ".join(sorted(shelved)) or "<none>")
-        if others:
-            details = ", ".join(f"{name} ({status})" for name, status in sorted(others))
-            print("Other statuses:", details)
+        with capsys.disabled():
+            print("Running instances:", ", ".join(sorted(running)) or "<none>")
+            print("Shelved instances:", ", ".join(sorted(shelved)) or "<none>")
+            if others:
+                details = ", ".join(f"{name} ({status})" for name, status in sorted(others))
+                print("Other statuses:", details)
     except SDKException as exc:
         pytest.fail(f"OpenStack live credential check failed: {exc}")
     finally:
