@@ -22,6 +22,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _format_openstack_status(status: str) -> str:
+    cleaned = (status or "UNKNOWN").replace("_", " ")
+    return cleaned.strip().title() or "Unknown"
+
+
 @dataclass(slots=True)
 class ButtonStatus:
     button_id: str
@@ -65,7 +70,7 @@ class InstanceActionManager:
                 button_id=button_id,
                 instance_name=button.instance_name,
                 state="idle",
-                message="Instance is idle.",
+                message="Fetching OpenStack status…",
                 running=False,
                 last_updated=_utcnow(),
             )
@@ -73,12 +78,63 @@ class InstanceActionManager:
         }
         self._tasks: Dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        self._prime_initial_statuses()
+
+    def _prime_initial_statuses(self) -> None:
+        for button_id, button in self._buttons.items():
+            try:
+                server = self._client.find_server(button.instance_name)
+            except SDKException as exc:
+                _LOGGER.debug("Initial status refresh failed for %s: %s", button.instance_name, exc, exc_info=True)
+                message = "Unable to query OpenStack status right now."
+            else:
+                if not server:
+                    message = "Instance not found in OpenStack."
+                else:
+                    raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
+                    display_status = _format_openstack_status(raw_status)
+                    message = f"Instance status: {display_status}."
+            self._statuses[button_id] = replace(
+                self._statuses[button_id],
+                message=message,
+            )
 
     def get_status(self, button_id: str) -> ButtonStatus:
         status = self._statuses.get(button_id)
         if not status:
             raise KeyError(f"Unknown button id '{button_id}'")
         return status
+
+    async def refresh_openstack_status(self, button_id: str) -> ButtonStatus:
+        button = self._buttons.get(button_id)
+        if not button:
+            raise KeyError(f"Unknown button id '{button_id}'")
+
+        status = self._statuses[button_id]
+        if status.running:
+            return status
+
+        try:
+            server = await asyncio.to_thread(self._client.find_server, button.instance_name)
+        except SDKException as exc:
+            _LOGGER.debug("Failed to refresh status for %s: %s", button.instance_name, exc, exc_info=True)
+            return await self._update_status(
+                button_id,
+                message="Unable to query OpenStack status right now.",
+            )
+
+        if not server:
+            return await self._update_status(
+                button_id,
+                message="Instance not found in OpenStack.",
+            )
+
+        raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
+        display_status = _format_openstack_status(raw_status)
+        return await self._update_status(
+            button_id,
+            message=f"Instance status: {display_status}.",
+        )
 
     async def start_unshelve(self, button_id: str) -> ButtonStatus:
         button = self._buttons.get(button_id)
@@ -152,7 +208,7 @@ class InstanceActionManager:
             status = (server.status or "").upper()
             await self._update_status(
                 button_id,
-                message=f"Current OpenStack status: {status or 'UNKNOWN'}",
+                message=f"Current OpenStack status: {_format_openstack_status(status or 'UNKNOWN')}.",
                 state="unshelving" if status in {"SHELVED", "SHELVED_OFFLOADED"} else "booting",
             )
 

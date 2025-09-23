@@ -156,6 +156,7 @@ def _format_timestamp(status: ButtonStatus) -> str:
 def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
     last_updated = _format_timestamp(status)
     pieces = [
+        Small(f"Instance: `{status.instance_name}`"),
         P(status.message),
         Small(f"Last updated: {last_updated}"),
     ]
@@ -201,7 +202,7 @@ async def status_view(request: Request, button_id: str):
     if not _user_from_session(request):
         return Div("Login required", id=f"status-{button_id}")
     try:
-        status = MANAGER.get_status(button_id)
+        status = await MANAGER.refresh_openstack_status(button_id)
     except KeyError:
         return Div("Unknown action", id=f"status-{button_id}")
     return _status_fragment(button_id, status)
