@@ -10,6 +10,7 @@ from fasthtml.common import (
     Form,
     H2,
     H3,
+    Img,
     P,
     Section,
     Small,
@@ -65,6 +66,33 @@ async def home(request: Request):
         )
 
     cards = []
+    avatar_url = user.get("avatar_url")
+    profile_url = user.get("profile_url")
+    user_header_children = []
+    if avatar_url:
+        avatar_img = Img(
+            src=avatar_url,
+            alt=f"{user.get('display_name', user['login'])}'s GitHub avatar",
+            style="width:64px;height:64px;border-radius:50%;object-fit:cover;",
+            cls="avatar",
+        )
+        if profile_url:
+            avatar_img = A(
+                avatar_img,
+                href=profile_url,
+                target="_blank",
+                rel="noopener",
+            )
+        user_header_children.append(avatar_img)
+
+    user_header_children.append(
+        Div(
+            H2(f"Welcome {user.get('display_name', user['login'])}"),
+            Small(f"@{user['login']}") if user.get("login") else None,
+            cls="user-greeting",
+        )
+    )
+
     for button in SETTINGS.buttons:
         children = [H3(button.label)]
         if button.description:
@@ -80,16 +108,33 @@ async def home(request: Request):
                 },
             )
         )
-        cards.append(Div(*children, cls="card"))
+        cards.append(
+            Div(
+                *children,
+                cls="card",
+                style="display:flex;flex-direction:column;gap:0.75rem;padding:1rem;border:1px solid #d1d5db;border-radius:12px;min-width:260px;max-width:320px;flex:1 1 260px;box-shadow:0 1px 2px rgba(0,0,0,0.05);background-color:#fff;",
+            )
+        )
+
+    cards_container = Div(
+        *cards,
+        cls="card-grid",
+        style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:stretch;margin-top:1.5rem;",
+    )
 
     content = Section(
-        H2(f"Welcome {user.get('display_name', user['login'])}"),
+        Div(*[child for child in user_header_children if child], cls="user-header"),
         P("Select an instance below to unshelve and monitor."),
-        *cards,
+        cards_container,
         Form(
-            Button("Logout", type="submit", cls="btn"),
+            Button(
+                "Logout",
+                type="submit",
+                style="background:none;border:none;color:#2563eb;padding:0;font-size:0.95rem;text-decoration:underline;cursor:pointer;",
+            ),
             method="post",
             action="/logout",
+            style="margin-top:1.5rem;text-align:right;",
         ),
     )
     return Titled(SETTINGS.app.title, content)
@@ -144,6 +189,7 @@ async def auth_callback(request: Request):
         "name": user.name,
         "display_name": user.display_name,
         "profile_url": user.profile_url,
+        "avatar_url": user.avatar_url,
     }
     request.session["github_token"] = token.access_token
     return Redirect("/")
@@ -183,6 +229,7 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
             hx_disabled_elt="this",
             disabled=status.running,
             cls="btn btn-primary" if not status.running else "btn disabled",
+            style="margin-top:auto;font-weight:600;",
         )
     )
 
