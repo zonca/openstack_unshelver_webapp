@@ -8,7 +8,7 @@ from openstack_unshelver_webapp.config import ConfigurationError, load_settings
 from openstack_unshelver_webapp.openstack_client import OpenStackClient
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("CI") or os.environ.get("PYTEST_SKIP_OPENSTACK_LIVE"),
+    bool(os.environ.get("CI")) or bool(os.environ.get("PYTEST_SKIP_OPENSTACK_LIVE")),
     reason="OpenStack live credential check runs only on developer machines",
 )
 
