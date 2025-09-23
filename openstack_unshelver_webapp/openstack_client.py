@@ -42,7 +42,8 @@ class OpenStackClient:
         self._settings = settings
 
     def create_connection(self) -> connection.Connection:
-        return connection.Connection(**self._settings.model_dump(exclude_none=True))
+        payload = self._settings.model_dump(exclude_none=True, mode="json")
+        return connection.Connection(**payload)
 
     def find_server(self, instance_name: str) -> Optional[Server]:
         conn = self.create_connection()
