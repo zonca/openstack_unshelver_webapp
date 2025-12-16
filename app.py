@@ -126,6 +126,8 @@ async def home(request: Request):
             Img(
                 src="https://cosmosage.online/cosmosage.jpg",
                 alt="Cosmosage logo",
+                referrerpolicy="no-referrer",
+                loading="lazy",
                 style="max-width:280px;width:100%;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08);margin:0 auto;",
             ),
             href="https://cosmosage.online/",
