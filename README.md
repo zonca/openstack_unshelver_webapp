@@ -1,6 +1,6 @@
 # OpenStack Unshelver Web App
 
-Check out the accompanying blog post: https://www.zonca.dev/posts/2025-09-22-openstack-unshelver-demo
+Release `2025.09.22` is tied to the accompanying blog post: https://www.zonca.dev/posts/2025-09-22-openstack-unshelver-demo
 
 FastHTML web application that authenticates users via GitHub OAuth (restricted to a
 particular organisation) and provides buttons that unshelve and monitor configured
