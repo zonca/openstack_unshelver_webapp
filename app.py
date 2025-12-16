@@ -158,6 +158,14 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
         P(status.message),
         Small(f"Last updated: {last_updated}"),
     ]
+    if status.state in {"active", "ready"} and status.url:
+        pieces.append(
+            Span(
+                "Cosmosage is already awake—head to the chat link below.",
+                cls="status-note",
+                style="display:block;margin-bottom:0.5rem;color:#065f46;font-weight:500;",
+            )
+        )
     if status.url:
         link_text = "Open web app" if status.http_ready else "Open anyway"
         pieces.append(
@@ -172,15 +180,28 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
     if status.error:
         pieces.append(Span(f"Error: {status.error}", cls="error"))
 
+    if status.running:
+        button_label = "Working…"
+        button_disabled = True
+        button_cls = "btn disabled"
+    elif status.state in {"active", "ready"}:
+        button_label = "Cosmosage is awake"
+        button_disabled = True
+        button_cls = "btn disabled"
+    else:
+        button_label = "Wake Cosmosage"
+        button_disabled = False
+        button_cls = "btn btn-primary"
+
     pieces.append(
         Button(
-            "Unshelve & start" if not status.running else "Working…",
+            button_label,
             hx_post=f"/action/{button_id}",
             hx_target=f"#status-{button_id}",
             hx_swap="outerHTML",
             hx_disabled_elt="this",
-            disabled=status.running,
-            cls="btn btn-primary" if not status.running else "btn disabled",
+            disabled=button_disabled,
+            cls=button_cls,
             style="margin-top:auto;font-weight:600;",
         )
     )
