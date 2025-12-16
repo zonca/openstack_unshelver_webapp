@@ -121,10 +121,15 @@ async def home(request: Request):
         P(
             "This tiny computer stays on 24/7 so visitors can wake the powerful AI workstation only when someone is ready to chat."
         ),
-        Img(
-            src="https://cosmosage.online/cosmosage.jpg",
-            alt="Cosmosage logo",
-            style="max-width:280px;width:100%;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08);margin:0 auto;",
+        A(
+            Img(
+                src="https://cosmosage.online/cosmosage.jpg",
+                alt="Cosmosage logo",
+                style="max-width:280px;width:100%;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08);margin:0 auto;",
+            ),
+            href="https://cosmosage.online/",
+            target="_blank",
+            rel="noopener",
         ),
         P(
             "Click the button below when the status says “shelved”. The page will keep you updated while the big machine boots up "
