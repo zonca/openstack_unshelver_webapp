@@ -72,7 +72,10 @@ class CaddyActivityMonitor:
             self._offset = 0  # log rotated/truncated
         with path.open("r", encoding="utf-8") as handle:
             handle.seek(self._offset)
-            for line in handle:
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
                 self._offset = handle.tell()
                 self._process_line(line)
 
