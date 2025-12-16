@@ -22,7 +22,7 @@ from fasthtml.common import (
     H1,
 )
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import PlainTextResponse
 
 from openstack_unshelver_webapp.config import (
     ButtonSettings,
@@ -86,8 +86,8 @@ async def _shutdown_event() -> None:
 
 
 @rt("/health")
-async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+async def health() -> PlainTextResponse:
+    return PlainTextResponse("ok")
 
 
 @rt("/")
