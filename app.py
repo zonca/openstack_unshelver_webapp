@@ -94,7 +94,7 @@ async def home(request: Request):
         not force_launcher
         and not request.headers.get("HX-Request")
         and status.state in {"active", "ready"}
-        and status.http_ready
+        and status.url
     ):
         return RedirectResponse("/chat", status_code=307)
 
