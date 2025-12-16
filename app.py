@@ -182,31 +182,32 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
     if status.error:
         pieces.append(Span(f"Error: {status.error}", cls="error"))
 
-    if status.running:
-        button_label = "Working…"
-        button_disabled = True
-        button_cls = "btn disabled"
-    elif status.state in {"active", "ready"}:
-        button_label = "Cosmosage is awake"
-        button_disabled = True
-        button_cls = "btn disabled"
-    else:
-        button_label = "Wake Cosmosage"
-        button_disabled = False
-        button_cls = "btn btn-primary"
-
-    pieces.append(
-        Button(
-            button_label,
-            hx_post=f"/action/{button_id}",
-            hx_target=f"#status-{button_id}",
-            hx_swap="outerHTML",
-            hx_disabled_elt="this",
-            disabled=button_disabled,
-            cls=button_cls,
-            style="margin-top:auto;font-weight:600;",
+    if status.state in {"active", "ready"} and status.url:
+        pieces.append(
+            A(
+                "Open Cosmosage Chat",
+                href=status.url,
+                target="_blank",
+                rel="noopener",
+                cls="btn btn-primary",
+                style="margin-top:auto;font-weight:600;",
+            )
         )
-    )
+    else:
+        button_label = "Working…" if status.running else "Wake Cosmosage"
+        button_cls = "btn disabled" if status.running else "btn btn-primary"
+        pieces.append(
+            Button(
+                button_label,
+                hx_post=f"/action/{button_id}",
+                hx_target=f"#status-{button_id}",
+                hx_swap="outerHTML",
+                hx_disabled_elt="this",
+                disabled=status.running,
+                cls=button_cls,
+                style="margin-top:auto;font-weight:600;",
+            )
+        )
 
     return Div(
         *pieces,
