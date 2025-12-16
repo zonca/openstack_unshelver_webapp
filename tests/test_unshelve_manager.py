@@ -86,6 +86,8 @@ async def manager(monkeypatch):
         poll_interval_seconds=1,
         http_probe_timeout=1,
         http_probe_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
     )
     button = ButtonSettings(
         id="button-one",
@@ -112,7 +114,7 @@ async def manager(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unshelve_workflow(manager):
-    status = await manager.start_unshelve("button-one")
+    status = await manager.start_unshelve("button-one", actor="tester")
     assert status.running
 
     task = manager._tasks["button-one"]
@@ -130,10 +132,10 @@ async def test_unshelve_workflow(manager):
 
 @pytest.mark.asyncio
 async def test_start_unshelve_ignores_duplicate_requests(manager):
-    status = await manager.start_unshelve("button-one")
+    status = await manager.start_unshelve("button-one", actor="tester")
     task = manager._tasks["button-one"]
 
-    second_status = await manager.start_unshelve("button-one")
+    second_status = await manager.start_unshelve("button-one", actor="tester")
     assert second_status.running
     assert manager._tasks["button-one"] is task
 
@@ -144,7 +146,7 @@ async def test_start_unshelve_ignores_duplicate_requests(manager):
 @pytest.mark.asyncio
 async def test_unknown_button(manager):
     with pytest.raises(KeyError):
-        await manager.start_unshelve("missing")
+        await manager.start_unshelve("missing", actor="tester")
 
     with pytest.raises(KeyError):
         manager.get_status("missing")
