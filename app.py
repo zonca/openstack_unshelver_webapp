@@ -117,20 +117,22 @@ async def home(request: Request):
     )
 
     hero = Div(
-        H2("GPU Chat Launcher"),
-        Small("This controller stays online while the GPU VM sleeps."),
+        H2("Cosmosage Chat Launcher"),
+        P(
+            "This tiny computer stays on 24/7 so visitors can wake the powerful AI workstation only when someone is ready to chat."
+        ),
+        P(
+            "Click the button below when the status says “shelved”. The page will keep you updated while the big machine boots up "
+            "(it can take a few minutes). When it is ready, just visit /chat on this same address and the AI interface will appear."
+        ),
+        P(
+            "After your session, return here to put Cosmosage back to sleep so we are not wasting energy or GPU hours."
+        ),
         cls="user-header",
-        style="display:flex;flex-direction:column;gap:0.25rem;",
+        style="display:flex;flex-direction:column;gap:0.5rem;",
     )
 
-    content = Section(
-        hero,
-        P(
-            "Wake the GPU-powered chat experience when the card below shows the instance is shelved. "
-            "Once the GPU VM is online, this hostname will transparently proxy traffic to it."
-        ),
-        cards_container,
-    )
+    content = Section(hero, cards_container)
     return Titled(SETTINGS.app.title, content)
 
 
