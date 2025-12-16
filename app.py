@@ -22,6 +22,7 @@ from fasthtml.common import (
     H1,
 )
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from openstack_unshelver_webapp.config import (
     ButtonSettings,
@@ -73,6 +74,7 @@ ACTIVITY_MONITOR = CaddyActivityMonitor(
 
 app, rt = fast_app(title=SETTINGS.app.title, secret_key=SETTINGS.app.secret_key)
 
+
 @app.on_event("startup")
 async def _startup_event() -> None:
     await ACTIVITY_MONITOR.start()
@@ -81,6 +83,11 @@ async def _startup_event() -> None:
 @app.on_event("shutdown")
 async def _shutdown_event() -> None:
     await ACTIVITY_MONITOR.stop()
+
+
+@rt("/health")
+async def health() -> JSONResponse:
+    return JSONResponse({"status": "ok"})
 
 
 @rt("/")
