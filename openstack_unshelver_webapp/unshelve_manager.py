@@ -106,11 +106,13 @@ class InstanceActionManager:
 
     def _prime_initial_statuses(self) -> None:
         for button_id, button in self._buttons.items():
+            message = "Unable to query OpenStack status right now."
+            state = self._statuses[button_id].state
+            url: Optional[str] = None
             try:
                 server = self._client.find_server(button.instance_name)
             except SDKException as exc:
                 _LOGGER.debug("Initial status refresh failed for %s: %s", button.instance_name, exc, exc_info=True)
-                message = "Unable to query OpenStack status right now."
             else:
                 if not server:
                     message = "Instance not found in OpenStack."
@@ -119,13 +121,15 @@ class InstanceActionManager:
                     display_status = _format_openstack_status(raw_status)
                     message = f"Instance status: {display_status}."
                     state = _normalise_state(raw_status)
-                    self._statuses[button_id] = replace(
-                        self._statuses[button_id],
-                        state=state,
-                    )
+                    if state in {"active", "ready"}:
+                        endpoint = self._client.build_endpoint(server, button)
+                        if endpoint:
+                            url = endpoint.launch_url
             self._statuses[button_id] = replace(
                 self._statuses[button_id],
+                state=state,
                 message=message,
+                url=url,
             )
 
     def get_status(self, button_id: str) -> ButtonStatus:
@@ -160,10 +164,18 @@ class InstanceActionManager:
 
         raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
         display_status = _format_openstack_status(raw_status)
+        state = _normalise_state(raw_status)
+        endpoint_url: Optional[str] = None
+        if state in {"active", "ready"}:
+            endpoint = self._client.build_endpoint(server, button)
+            if endpoint:
+                endpoint_url = endpoint.launch_url
+
         return await self._update_status(
             button_id,
             message=f"Instance status: {display_status}.",
-            state=_normalise_state(raw_status),
+            state=state,
+            url=endpoint_url,
         )
 
     async def start_unshelve(self, button_id: str, *, actor: str, reason: Optional[str] = None) -> ButtonStatus:
