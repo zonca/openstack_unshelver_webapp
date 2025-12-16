@@ -8,6 +8,7 @@ __pycache__/
 # Local config / secrets
 .sesskey
 .env
+tutorial.md
 
 # Tooling
 .uv/

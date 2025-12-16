@@ -23,6 +23,7 @@ from fasthtml.common import (
     H1,
 )
 from starlette.requests import Request
+from starlette.responses import RedirectResponse
 
 from openstack_unshelver_webapp.config import (
     ButtonSettings,
@@ -87,6 +88,16 @@ async def _shutdown_event() -> None:
 
 @rt("/")
 async def home(request: Request):
+    status = MANAGER.get_status(DEFAULT_BUTTON_ID)
+    force_launcher = request.query_params.get("view") == "launcher"
+    if (
+        not force_launcher
+        and not request.headers.get("HX-Request")
+        and status.state in {"active", "ready"}
+        and status.http_ready
+    ):
+        return RedirectResponse("/chat", status_code=307)
+
     cards = []
     for button in SETTINGS.buttons:
         children = [H3(button.label)]
