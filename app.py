@@ -11,6 +11,7 @@ from fasthtml.common import (
     Form,
     H2,
     H3,
+    Img,
     P,
     Section,
     Small,
