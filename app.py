@@ -22,6 +22,7 @@ from fasthtml.common import (
     H1,
 )
 from starlette.requests import Request
+from starlette.responses import Response
 
 from openstack_unshelver_webapp.config import (
     ButtonSettings,
@@ -85,8 +86,8 @@ async def _shutdown_event() -> None:
 
 
 @rt("/health")
-async def health() -> str:
-    return "ok"
+async def health() -> Response:
+    return Response("ok", media_type="text/plain")
 
 
 @rt("/")
