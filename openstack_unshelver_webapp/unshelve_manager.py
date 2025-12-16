@@ -28,6 +28,22 @@ def _format_openstack_status(status: str) -> str:
     return cleaned.strip().title() or "Unknown"
 
 
+def _normalise_state(status: str) -> str:
+    """Collapse OpenStack statuses into controller-friendly states."""
+    state = (status or "").upper()
+    if state in {"SHELVED", "SHELVED_OFFLOADED"}:
+        return "shelved"
+    if state in {"ACTIVE"}:
+        return "active"
+    if state in {"SHUTOFF"}:
+        return "off"
+    if state in {"BUILD", "REBUILD", "VERIFY_RESIZE"}:
+        return "booting"
+    if state in {"ERROR"}:
+        return "error"
+    return "unknown"
+
+
 @dataclass(slots=True)
 class ButtonStatus:
     button_id: str
@@ -102,6 +118,11 @@ class InstanceActionManager:
                     raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
                     display_status = _format_openstack_status(raw_status)
                     message = f"Instance status: {display_status}."
+                    state = _normalise_state(raw_status)
+                    self._statuses[button_id] = replace(
+                        self._statuses[button_id],
+                        state=state,
+                    )
             self._statuses[button_id] = replace(
                 self._statuses[button_id],
                 message=message,
@@ -142,6 +163,7 @@ class InstanceActionManager:
         return await self._update_status(
             button_id,
             message=f"Instance status: {display_status}.",
+            state=_normalise_state(raw_status),
         )
 
     async def start_unshelve(self, button_id: str, *, actor: str, reason: Optional[str] = None) -> ButtonStatus:
