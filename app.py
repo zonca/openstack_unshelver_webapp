@@ -138,9 +138,6 @@ async def home(request: Request):
 
     hero = Div(
         H2("Cosmosage Chat Launcher"),
-        P(
-            "This tiny computer stays on 24/7 so visitors can wake the powerful AI workstation only when someone is ready to chat."
-        ),
         A(
             Img(
                 src="https://cosmosage.online/cosmosage.jpg",
@@ -153,14 +150,8 @@ async def home(request: Request):
             target="_blank",
             rel="noopener",
         ),
-        P(
-            "Click the button below when the status says “shelved”. The controller will wake Cosmosage and show you live progress "
-            "updates (it can take a few minutes)."
-        ),
+        P("When Cosmosage wakes up it will stay online for up to two hours after the last chat session finishes."),
         chat_call_to_action,
-        P(
-            "After your session, return here to put Cosmosage back to sleep so we are not wasting energy or GPU hours."
-        ),
         cls="user-header",
         style="display:flex;flex-direction:column;gap:0.5rem;",
     )
@@ -186,17 +177,6 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
                 "Cosmosage is already awake—head to the chat link below.",
                 cls="status-note",
                 style="display:block;margin-bottom:0.5rem;color:#065f46;font-weight:500;",
-            )
-        )
-    if status.url:
-        link_text = "Open web app" if status.http_ready else "Open anyway"
-        pieces.append(
-            A(
-                link_text,
-                href=status.url,
-                target="_blank",
-                rel="noopener",
-                cls="btn-link",
             )
         )
     if status.error:
