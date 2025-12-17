@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Optional
+
+# Ensure the project root is on sys.path when run as a script.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from openstack import connection
 from openstack.exceptions import SDKException

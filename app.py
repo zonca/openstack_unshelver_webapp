@@ -87,6 +87,8 @@ async def _shutdown_event() -> None:
 @rt("/")
 async def home(request: Request):
     status = MANAGER.get_status(DEFAULT_BUTTON_ID)
+    default_button = BUTTON_MAP[DEFAULT_BUTTON_ID]
+
     cards = []
     for button in SETTINGS.buttons:
         children = [H3(button.label)]
@@ -117,6 +119,23 @@ async def home(request: Request):
         style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:stretch;margin-top:1.5rem;",
     )
 
+    chat_url = default_button.public_base_url
+    if chat_url:
+        chat_call_to_action = P(
+            "When the card turns green, open ",
+            A(
+                chat_url,
+                href=chat_url,
+                target="_blank",
+                rel="noopener",
+            ),
+            " in your browser—the chat UI lives there and keeps using this same always-on gateway."
+        )
+    else:
+        chat_call_to_action = P(
+            "When the card turns green, follow the chat link that appears on the status card below."
+        )
+
     hero = Div(
         H2("Cosmosage Chat Launcher"),
         P(
@@ -138,16 +157,7 @@ async def home(request: Request):
             "Click the button below when the status says “shelved”. The controller will wake Cosmosage and show you live progress "
             "updates (it can take a few minutes)."
         ),
-        P(
-            "When the card turns green, open ",
-            A(
-                "https://cosmosage.cis230085.projects.jetstream-cloud.org/",
-                href="https://cosmosage.cis230085.projects.jetstream-cloud.org/",
-                target="_blank",
-                rel="noopener",
-            ),
-            " in your browser—the chat UI lives there and keeps using this same always-on gateway."
-        ),
+        chat_call_to_action,
         P(
             "After your session, return here to put Cosmosage back to sleep so we are not wasting energy or GPU hours."
         ),
