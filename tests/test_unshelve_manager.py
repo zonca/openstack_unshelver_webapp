@@ -201,6 +201,37 @@ async def test_unshelve_workflow(manager):
 
 
 @pytest.mark.asyncio
+async def test_public_base_url_overrides_endpoint(monkeypatch):
+    app_settings = AppSettings(
+        title="Test Public URL",
+        secret_key="0123456789abcdef",
+        poll_interval_seconds=1,
+        http_probe_timeout=1,
+        http_probe_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
+    )
+    button = ButtonSettings(
+        id="button-one",
+        label="Button",
+        instance_name="instance-one",
+        url_scheme="http",
+        healthcheck_path="/health",
+        public_base_url="https://chat.example.com",
+    )
+    client = AlwaysActiveClient()
+    mgr = InstanceActionManager(app_settings, {button.id: button}, client)
+
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+
+    status = await mgr.refresh_openstack_status("button-one")
+    assert status.url == "https://chat.example.com/"
+
+
+@pytest.mark.asyncio
 async def test_start_unshelve_ignores_duplicate_requests(manager):
     status = await manager.start_unshelve("button-one", actor="tester")
     task = manager._tasks["button-one"]

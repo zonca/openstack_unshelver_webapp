@@ -21,6 +21,7 @@ buttons:
     label: "Wake the GPU chatbot"
     description: "Unshelve the GPU VM and forward the chat UI through this address."
     instance_name: "gpu-chat-instance"
+    public_base_url: "https://chat.example.com"
     preferred_networks:
       - public
     url_scheme: "https"

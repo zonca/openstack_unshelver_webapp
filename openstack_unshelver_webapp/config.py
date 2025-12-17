@@ -71,6 +71,10 @@ class ButtonSettings(BaseModel):
     instance_name: str
     description: Optional[str] = None
     preferred_networks: Optional[List[str]] = None
+    public_base_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Optional public hostname/URL served via the controller (used for links shown to users)",
+    )
     url_scheme: str = Field(default="http", pattern=r"^[a-zA-Z][a-zA-Z0-9+.-]*$")
     port: Optional[int] = Field(default=None, ge=1, le=65535)
     healthcheck_path: str = Field(default="/")

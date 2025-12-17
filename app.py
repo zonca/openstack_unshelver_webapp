@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-import httpx
 from typing import Dict
 
 from fasthtml.common import (
@@ -24,8 +23,6 @@ from fasthtml.common import (
     H1,
 )
 from starlette.requests import Request
-from starlette.responses import Response
-from starlette.responses import RedirectResponse
 
 from openstack_unshelver_webapp.config import (
     ButtonSettings,
@@ -59,23 +56,6 @@ EVENT_LOGGER = EventLogger(
 
 MANAGER = InstanceActionManager(SETTINGS.app, BUTTON_MAP, OPENSTACK_CLIENT, event_logger=EVENT_LOGGER)
 
-_GPU_PROXY_HEADERS = {"content-type", "cache-control", "etag", "last-modified", "expires"}
-
-
-async def _proxy_gpu_frontend(target_url: str) -> Response | None:
-    """Fetch the GPU UI and stream it through the controller when Cosmosage is awake."""
-
-    try:
-        async with httpx.AsyncClient(timeout=SETTINGS.app.http_probe_timeout, follow_redirects=True) as client:
-            resp = await client.get(target_url)
-    except httpx.HTTPError as exc:
-        logging.warning("Failed to proxy GPU frontend at %s: %s", target_url, exc)
-        return None
-
-    headers = {key: value for key, value in resp.headers.items() if key.lower() in _GPU_PROXY_HEADERS}
-    return Response(content=resp.content, status_code=resp.status_code, headers=headers)
-
-
 async def _idle_shutdown() -> None:
     status = MANAGER.get_status(DEFAULT_BUTTON_ID)
     if status.state in {"shelved", "idle"}:
@@ -107,17 +87,6 @@ async def _shutdown_event() -> None:
 @rt("/")
 async def home(request: Request):
     status = MANAGER.get_status(DEFAULT_BUTTON_ID)
-    force_launcher = request.query_params.get("view") == "launcher"
-    if (
-        not force_launcher
-        and not request.headers.get("HX-Request")
-        and status.state in {"active", "ready"}
-        and status.url
-    ):
-        proxied = await _proxy_gpu_frontend(status.url)
-        if proxied:
-            return proxied
-
     cards = []
     for button in SETTINGS.buttons:
         children = [H3(button.label)]
@@ -166,8 +135,18 @@ async def home(request: Request):
             rel="noopener",
         ),
         P(
-            "Click the button below when the status says “shelved”. The page will keep you updated while the big machine boots up "
-            "(it can take a few minutes). When it is ready, just visit /chat on this same address and the AI interface will appear."
+            "Click the button below when the status says “shelved”. The controller will wake Cosmosage and show you live progress "
+            "updates (it can take a few minutes)."
+        ),
+        P(
+            "When the card turns green, open ",
+            A(
+                "https://cosmosage.cis230085.projects.jetstream-cloud.org/",
+                href="https://cosmosage.cis230085.projects.jetstream-cloud.org/",
+                target="_blank",
+                rel="noopener",
+            ),
+            " in your browser—the chat UI lives there and keeps using this same always-on gateway."
         ),
         P(
             "After your session, return here to put Cosmosage back to sleep so we are not wasting energy or GPU hours."

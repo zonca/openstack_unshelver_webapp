@@ -99,6 +99,14 @@ class InstanceActionManager:
         self._lock = asyncio.Lock()
         self._prime_initial_statuses()
 
+    @staticmethod
+    def _public_launch_url(button: ButtonSettings, endpoint: InstanceEndpoint) -> str:
+        path = button.launch_path or "/"
+        if button.public_base_url:
+            base = str(button.public_base_url).rstrip("/")
+            return f"{base}{path}"
+        return endpoint.launch_url
+
     async def log_event(self, action: str, *, actor: str, instance_name: str, detail: Optional[str] = None) -> None:
         if not self._event_logger:
             return
@@ -124,7 +132,7 @@ class InstanceActionManager:
                     if state in {"active", "ready"}:
                         endpoint = self._client.build_endpoint(server, button)
                         if endpoint:
-                            url = endpoint.launch_url
+                            url = self._public_launch_url(button, endpoint)
             self._statuses[button_id] = replace(
                 self._statuses[button_id],
                 state=state,
@@ -169,7 +177,7 @@ class InstanceActionManager:
         if state in {"active", "ready"}:
             endpoint = self._client.build_endpoint(server, button)
             if endpoint:
-                endpoint_url = endpoint.launch_url
+                endpoint_url = self._public_launch_url(button, endpoint)
 
         return await self._update_status(
             button_id,
@@ -306,12 +314,13 @@ class InstanceActionManager:
                     http_ready=False,
                 )
                 return
+            display_url = self._public_launch_url(button, endpoint)
 
             await self._update_status(
                 button_id,
                 state="active",
                 message="Instance ACTIVE. Checking application availability…",
-                url=endpoint.launch_url,
+                url=display_url,
                 http_ready=False,
             )
 
@@ -321,7 +330,7 @@ class InstanceActionManager:
                     button_id,
                     state="ready",
                     message="Instance is ready.",
-                    url=endpoint.launch_url,
+                    url=display_url,
                     http_ready=True,
                     error=None,
                 )
@@ -331,7 +340,7 @@ class InstanceActionManager:
                     button_id,
                     state="active",
                     message="Instance ACTIVE but application is not responding.",
-                    url=endpoint.launch_url,
+                    url=display_url,
                     http_ready=False,
                     error=detail,
                 )

@@ -14,6 +14,7 @@ OpenStack Swift for durability.
 - `/control` surface gated by a shared token that exposes manual start/stop actions
 - Idle detection via Caddy access logs with auto-shelve when no traffic hits the GPU
 - JSONL event logging on disk plus mirroring to an OpenStack Swift container
+- Dual-host routing so one hostname always shows the launcher while a second hostname proxies the GPU chat UI and falls back gracefully when the VM sleeps
 
 ## Configuration
 Create a configuration file following [`config.example.yaml`](config.example.yaml) and
@@ -25,7 +26,8 @@ Key sections:
 - `openstack`: Authentication credentials passed to `openstacksdk`. These credentials are
   also used to upload audit events into Swift.
 - `buttons`: Exactly one entry describing the GPU instance to control (health endpoint,
-  launch path, network hints).
+  launch path, network hints, and the optional `public_base_url` that tells the UI which
+  controller hostname should be presented to end users.
 - `activity_*`: Path to the Caddy JSON log file, idle thresholds, and upstream label used
   to identify which entries represent proxied GPU traffic.
 - `local_event_log` + `swift_event_*`: paths and container details for durable logging.
@@ -55,6 +57,8 @@ uv run pytest
 - The OpenStack credentials can be provided either as username/password/project or
   application credentials (set `application_credential_id` and
   `application_credential_secret`).
+- Use `uv run python scripts/ensure_dns_record.py <hostname> <ip>` to create/update the
+  Designate A records that point public hostnames to the controller VM.
 
 ## Next Version Architecture Plan
 
@@ -65,13 +69,12 @@ GPU instance is shelved by default.
 - **Process layout**: the controller VM runs the FastHTML app (without GitHub auth and
   with a public landing page), Caddy serving TLS + reverse proxy duties, and a background
   watcher that streams Caddy access logs to track activity.
-- **Caddy flow**: a single static config always accepts traffic at the controller; it
-  tries the GPU backend first and falls back to the controller UI whenever the GPU
-  instance is shelved or unhealthy. A dedicated `/control` route always stays on the
-  controller so operators can monitor and intervene.
+- **Dual hostnames**: `cosmosage-unshelver…` always lands on the launcher UI while
+  `cosmosage…` proxies to the GPU VM. When the GPU is offline, Caddy detects the failure
+  and redirects the chat hostname back to the launcher.
 - **Wake + proxy**: when a visitor presses the public button, the FastHTML app unshelves
-  the GPU VM, polls its `/health`, and flips an internal flag that lets Caddy keep
-  proxying through transparently. Users stay on the same hostname the entire time.
+  the GPU VM, polls its `/health`, and posts a friendly message telling people to open
+  the chat hostname once it is ready.
 - **Idle detection**: the controller watches Caddy’s proxied requests; if no traffic hits
   the GPU backend for the configured timeout, a background task triggers the shelve
   workflow. This exists alongside a manual shelve-now endpoint exposed only at an obscure
@@ -85,7 +88,7 @@ GPU instance is shelved by default.
   Caddy fallback flag reflects reality. Periodic checks keep Caddy, OpenStack, and the UI
   in sync even if an action fails midway.
 
-This plan keeps the GPU instance costs near zero while presenting a seamless single-host
+This plan keeps the GPU instance costs near zero while presenting a seamless launcher
 experience and a persistent control plane for administrators.
 
 ### Controller Deployment Notes
