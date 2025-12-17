@@ -48,4 +48,4 @@ uv run pytest
   application credentials (set `application_credential_id` and
   `application_credential_secret`).
 
-The cosmosage version of this is available in the `cosmosage_unshelver` branch. Link: https://www.zonca.dev/posts/2025-12-16-cosmosage-unshelver
+The cosmosage version of this is available in the [`cosmosage_unshelver` branch](https://github.com/zonca/openstack_unshelver_webapp/tree/cosmosage_unshelver). Link: https://www.zonca.dev/posts/2025-12-16-cosmosage-unshelver
