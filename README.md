@@ -47,3 +47,5 @@ uv run pytest
 - The OpenStack credentials can be provided either as username/password/project or
   application credentials (set `application_credential_id` and
   `application_credential_secret`).
+
+The cosmosage version of this is available in the `cosmosage_unshelver` branch. Link: https://www.zonca.dev/posts/2025-12-16-cosmosage-unshelver
