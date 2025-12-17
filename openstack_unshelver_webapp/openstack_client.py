@@ -66,6 +66,14 @@ class OpenStackClient:
         finally:
             conn.close()
 
+    def shelve_server(self, server_id: str) -> None:
+        conn = self.create_connection()
+        try:
+            server = conn.compute.get_server(server_id)
+            conn.compute.shelve_server(server)
+        finally:
+            conn.close()
+
     def get_server(self, server_id: str) -> Server:
         conn = self.create_connection()
         try:

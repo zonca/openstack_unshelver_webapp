@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Dict
 
 from fasthtml.common import (
@@ -17,8 +18,9 @@ from fasthtml.common import (
     Span,
     Titled,
     fast_app,
-    Redirect,
     serve,
+    Input,
+    H1,
 )
 from starlette.requests import Request
 
@@ -28,7 +30,8 @@ from openstack_unshelver_webapp.config import (
     Settings,
     load_settings,
 )
-from openstack_unshelver_webapp.github import GitHubOAuth, GitHubOAuthError
+from openstack_unshelver_webapp.activity import CaddyActivityMonitor
+from openstack_unshelver_webapp.event_logger import EventLogger
 from openstack_unshelver_webapp.openstack_client import OpenStackClient
 from openstack_unshelver_webapp.unshelve_manager import ButtonStatus, InstanceActionManager
 
@@ -40,59 +43,53 @@ try:
 except ConfigurationError as exc:  # pragma: no cover - configuration must load at startup
     raise SystemExit(str(exc)) from exc
 
-GITHUB = GitHubOAuth(SETTINGS.github)
 OPENSTACK_CLIENT = OpenStackClient(SETTINGS.openstack)
 BUTTON_MAP: Dict[str, ButtonSettings] = {button.id: button for button in SETTINGS.buttons}
-MANAGER = InstanceActionManager(SETTINGS.app, BUTTON_MAP, OPENSTACK_CLIENT)
+DEFAULT_BUTTON_ID = SETTINGS.buttons[0].id
+
+EVENT_LOGGER = EventLogger(
+    local_path=SETTINGS.local_event_log,
+    openstack_settings=SETTINGS.openstack,
+    swift_container=SETTINGS.swift_event_container,
+    swift_prefix=SETTINGS.swift_event_prefix,
+)
+
+MANAGER = InstanceActionManager(SETTINGS.app, BUTTON_MAP, OPENSTACK_CLIENT, event_logger=EVENT_LOGGER)
+
+async def _idle_shutdown() -> None:
+    status = MANAGER.get_status(DEFAULT_BUTTON_ID)
+    if status.state in {"shelved", "idle"}:
+        return
+    await MANAGER.start_shelve(DEFAULT_BUTTON_ID, actor="idle-monitor", reason="idle-timeout")
+
+
+ACTIVITY_MONITOR = CaddyActivityMonitor(
+    log_path=SETTINGS.activity_log_path,
+    upstream_label=SETTINGS.caddy_upstream_label,
+    idle_timeout=timedelta(minutes=SETTINGS.idle_timeout_minutes),
+    poll_interval=SETTINGS.idle_poll_interval_seconds,
+    on_idle=_idle_shutdown,
+)
 
 app, rt = fast_app(title=SETTINGS.app.title, secret_key=SETTINGS.app.secret_key)
 
 
-def _user_from_session(request: Request) -> dict | None:
-    return request.session.get("user")
+@app.on_event("startup")
+async def _startup_event() -> None:
+    await ACTIVITY_MONITOR.start()
+
+
+@app.on_event("shutdown")
+async def _shutdown_event() -> None:
+    await ACTIVITY_MONITOR.stop()
 
 
 @rt("/")
 async def home(request: Request):
-    user = _user_from_session(request)
-    if not user:
-        return Titled(
-            SETTINGS.app.title,
-            Section(
-                H2("OpenStack Unshelver"),
-                P("Login with GitHub (org membership required) to manage instances."),
-                A("Login with GitHub", href="/login", cls="btn btn-primary"),
-            ),
-        )
+    status = MANAGER.get_status(DEFAULT_BUTTON_ID)
+    default_button = BUTTON_MAP[DEFAULT_BUTTON_ID]
 
     cards = []
-    avatar_url = user.get("avatar_url")
-    profile_url = user.get("profile_url")
-    user_header_children = []
-    if avatar_url:
-        avatar_img = Img(
-            src=avatar_url,
-            alt=f"{user.get('display_name', user['login'])}'s GitHub avatar",
-            style="width:64px;height:64px;border-radius:50%;object-fit:cover;",
-            cls="avatar",
-        )
-        if profile_url:
-            avatar_img = A(
-                avatar_img,
-                href=profile_url,
-                target="_blank",
-                rel="noopener",
-            )
-        user_header_children.append(avatar_img)
-
-    user_header_children.append(
-        Div(
-            H2(f"Welcome {user.get('display_name', user['login'])}"),
-            Small(f"@{user['login']}") if user.get("login") else None,
-            cls="user-greeting",
-        )
-    )
-
     for button in SETTINGS.buttons:
         children = [H3(button.label)]
         if button.description:
@@ -122,77 +119,34 @@ async def home(request: Request):
         style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:stretch;margin-top:1.5rem;",
     )
 
-    content = Section(
-        Div(*[child for child in user_header_children if child], cls="user-header"),
-        P("Select an instance below to unshelve and monitor."),
-        cards_container,
-        Form(
-            Button(
-                "Logout",
-                type="submit",
-                style="background:none;border:none;color:#2563eb;padding:0;font-size:0.95rem;text-decoration:underline;cursor:pointer;",
+    chat_url = default_button.public_base_url
+    if chat_url:
+        chat_call_to_action = P("When the card turns green, open the chat link that appears on the status card below.")
+    else:
+        chat_call_to_action = P("When the card turns green, follow the chat link that appears on the status card below.")
+
+    hero = Div(
+        H2("Cosmosage Chat Launcher"),
+        A(
+            Img(
+                src="https://cosmosage.online/cosmosage.jpg",
+                alt="Cosmosage logo",
+                referrerpolicy="no-referrer",
+                loading="lazy",
+                style="max-width:280px;width:100%;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08);margin:0 auto;",
             ),
-            method="post",
-            action="/logout",
-            style="margin-top:1.5rem;text-align:right;",
+            href="https://cosmosage.online/",
+            target="_blank",
+            rel="noopener",
         ),
+        P("When Cosmosage wakes up it will stay online for up to two hours after the last chat session finishes."),
+        chat_call_to_action,
+        cls="user-header",
+        style="display:flex;flex-direction:column;gap:0.5rem;",
     )
+
+    content = Section(hero, cards_container)
     return Titled(SETTINGS.app.title, content)
-
-
-@rt("/login")
-async def login(request: Request):
-    state = GITHUB.build_state()
-    request.session["oauth_state"] = state
-    return Redirect(GITHUB.authorization_url(state))
-
-
-@rt("/logout", methods=["POST"])
-async def logout(request: Request):
-    request.session.clear()
-    return Redirect("/")
-
-
-@rt("/auth/callback")
-async def auth_callback(request: Request):
-    params = request.query_params
-    error = params.get("error")
-    if error:
-        return Titled(SETTINGS.app.title, P(f"GitHub login failed: {error}"))
-
-    state = params.get("state")
-    if not state or state != request.session.get("oauth_state"):
-        return Titled(SETTINGS.app.title, P("Invalid OAuth state"))
-
-    code = params.get("code")
-    if not code:
-        return Titled(SETTINGS.app.title, P("Missing OAuth code"))
-
-    try:
-        token = await GITHUB.exchange_code_for_token(code)
-        if not await GITHUB.verify_membership(token):
-            return Titled(
-                SETTINGS.app.title,
-                Section(
-                    H2("Access Denied"),
-                    P("GitHub user is not a member of the required organisation."),
-                    A("Try another account", href="/login", cls="btn"),
-                ),
-            )
-        user = await GITHUB.fetch_user(token)
-    except GitHubOAuthError as exc:
-        return Titled(SETTINGS.app.title, P(f"GitHub authentication failed: {exc}"))
-
-    request.session.pop("oauth_state", None)
-    request.session["user"] = {
-        "login": user.login,
-        "name": user.name,
-        "display_name": user.display_name,
-        "profile_url": user.profile_url,
-        "avatar_url": user.avatar_url,
-    }
-    request.session["github_token"] = token.access_token
-    return Redirect("/")
 
 
 def _format_timestamp(status: ButtonStatus) -> str:
@@ -206,32 +160,43 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
         P(status.message),
         Small(f"Last updated: {last_updated}"),
     ]
-    if status.url:
-        link_text = "Open web app" if status.http_ready else "Open anyway"
+    if status.state in {"active", "ready"} and status.url:
         pieces.append(
-            A(
-                link_text,
-                href=status.url,
-                target="_blank",
-                rel="noopener",
-                cls="btn-link",
+            Span(
+                "Cosmosage is already awake—head to the chat link below.",
+                cls="status-note",
+                style="display:block;margin-bottom:0.5rem;color:#065f46;font-weight:500;",
             )
         )
     if status.error:
         pieces.append(Span(f"Error: {status.error}", cls="error"))
 
-    pieces.append(
-        Button(
-            "Unshelve & start" if not status.running else "Working…",
-            hx_post=f"/action/{button_id}",
-            hx_target=f"#status-{button_id}",
-            hx_swap="outerHTML",
-            hx_disabled_elt="this",
-            disabled=status.running,
-            cls="btn btn-primary" if not status.running else "btn disabled",
-            style="margin-top:auto;font-weight:600;",
+    if status.state in {"active", "ready"} and status.url:
+        pieces.append(
+            A(
+                "Open Cosmosage Chat",
+                href=status.url,
+                target="_blank",
+                rel="noopener",
+                cls="btn btn-primary",
+                style="margin-top:auto;font-weight:600;",
+            )
         )
-    )
+    else:
+        button_label = "Working…" if status.running else "Wake Cosmosage"
+        button_cls = "btn disabled" if status.running else "btn btn-primary"
+        pieces.append(
+            Button(
+                button_label,
+                hx_post=f"/action/{button_id}",
+                hx_target=f"#status-{button_id}",
+                hx_swap="outerHTML",
+                hx_disabled_elt="this",
+                disabled=status.running,
+                cls=button_cls,
+                style="margin-top:auto;font-weight:600;",
+            )
+        )
 
     return Div(
         *pieces,
@@ -246,8 +211,6 @@ def _status_fragment(button_id: str, status: ButtonStatus) -> Div:
 
 @rt("/status/{button_id}")
 async def status_view(request: Request, button_id: str):
-    if not _user_from_session(request):
-        return Div("Login required", id=f"status-{button_id}")
     try:
         status = await MANAGER.refresh_openstack_status(button_id)
     except KeyError:
@@ -257,13 +220,99 @@ async def status_view(request: Request, button_id: str):
 
 @rt("/action/{button_id}", methods=["POST"])
 async def trigger_unshelve(request: Request, button_id: str):
-    if not _user_from_session(request):
-        return Div("Login required", id=f"status-{button_id}")
     try:
-        status = await MANAGER.start_unshelve(button_id)
+        status = await MANAGER.start_unshelve(button_id, actor="public-button", reason="web-request")
     except KeyError:
         return Div("Unknown action", id=f"status-{button_id}")
     return _status_fragment(button_id, status)
+
+
+def _verify_token(request: Request) -> bool:
+    token = request.query_params.get("token") or request.headers.get("x-control-token")
+    return bool(token and token == SETTINGS.app.control_token)
+
+
+def _control_denied() -> Titled:
+    return Titled(SETTINGS.app.title, Section(H2("Control Locked"), P("Provide the correct token to access this page.")))
+
+
+@rt("/control")
+async def control_panel(request: Request):
+    if not _verify_token(request):
+        return _control_denied()
+
+    status = MANAGER.get_status(DEFAULT_BUTTON_ID)
+    last_activity = ACTIVITY_MONITOR.last_activity()
+    idle_timeout = timedelta(minutes=SETTINGS.idle_timeout_minutes)
+    deadline = last_activity + idle_timeout if last_activity else None
+    activity_info = [
+        P(f"Last proxied request: {_format_dt(last_activity) if last_activity else 'unknown'}"),
+        P(f"Idle timeout: {idle_timeout}"),
+        P(f"Next auto-shelve: {_format_dt(deadline) if deadline else 'unknown'}"),
+    ]
+    token = request.query_params.get("token")
+    shelve_form = Form(
+        Input(type="hidden", name="token", value=token),
+        Button("Shelve GPU now", type="submit", cls="btn btn-danger"),
+        method="post",
+        action=SETTINGS.app.manual_shelve_path,
+        style="margin-top:1rem;",
+        **{
+            "hx-post": SETTINGS.app.manual_shelve_path,
+            "hx-target": f"#status-{DEFAULT_BUTTON_ID}",
+            "hx-swap": "outerHTML",
+        },
+    )
+    unshelve_form = Form(
+        Input(type="hidden", name="token", value=token),
+        Button("Force Unshelve", type="submit", cls="btn btn-primary"),
+        method="post",
+        action=f"/admin-unshelve/{DEFAULT_BUTTON_ID}",
+        style="margin-top:1rem;",
+        **{
+            "hx-post": f"/admin-unshelve/{DEFAULT_BUTTON_ID}",
+            "hx-target": f"#status-{DEFAULT_BUTTON_ID}",
+            "hx-swap": "outerHTML",
+        },
+    )
+    content = Section(
+        H1("Controller"),
+        P("This dashboard remains on the controller VM even when traffic is proxied."),
+        Div(*activity_info, cls="activity-card", style="margin-bottom:1rem;"),
+        _status_fragment(DEFAULT_BUTTON_ID, status),
+        shelve_form,
+        unshelve_form,
+    )
+    return Titled(SETTINGS.app.title, content)
+
+
+@rt(SETTINGS.app.manual_shelve_path, methods=["POST"])
+async def manual_shelve(request: Request):
+    form = await request.form()
+    token = form.get("token") or request.query_params.get("token")
+    if token != SETTINGS.app.control_token:
+        return _control_denied()
+    status = await MANAGER.start_shelve(DEFAULT_BUTTON_ID, actor="manual-shelve", reason="control-panel")
+    return _status_fragment(DEFAULT_BUTTON_ID, status)
+
+
+@rt("/admin-unshelve/{button_id}", methods=["POST"])
+async def manual_unshelve(request: Request, button_id: str):
+    form = await request.form()
+    token = form.get("token") or request.query_params.get("token")
+    if token != SETTINGS.app.control_token:
+        return _control_denied()
+    try:
+        status = await MANAGER.start_unshelve(button_id, actor="manual-unshelve", reason="control-panel")
+    except KeyError:
+        return Div("Unknown action", id=f"status-{button_id}")
+    return _status_fragment(button_id, status)
+
+
+def _format_dt(value: datetime | None) -> str:
+    if value is None:
+        return "unknown"
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 if __name__ == "__main__":

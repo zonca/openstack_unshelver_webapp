@@ -86,6 +86,8 @@ async def manager(monkeypatch):
         poll_interval_seconds=1,
         http_probe_timeout=1,
         http_probe_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
     )
     button = ButtonSettings(
         id="button-one",
@@ -110,9 +112,79 @@ async def manager(monkeypatch):
     return mgr
 
 
+class AlwaysActiveClient(DummyClient):
+    def __init__(self):
+        super().__init__()
+        self._server = DummyServer(
+            "server-active",
+            "ACTIVE",
+            addresses={
+                "public": [
+                    {
+                        "addr": "203.0.113.10",
+                        "version": 4,
+                        "OS-EXT-IPS:type": "floating",
+                    },
+                    {
+                        "addr": "10.0.0.5",
+                        "version": 4,
+                        "OS-EXT-IPS:type": "fixed",
+                    },
+                ]
+            },
+        )
+
+    def find_server(self, instance_name):
+        if instance_name != "instance-one":
+            return None
+        return self._server
+
+    def get_server(self, server_id):
+        return self._server
+
+    def build_endpoint(self, server, button):
+        return InstanceEndpoint(
+            address="203.0.113.10",
+            scheme=button.url_scheme,
+            port=button.port,
+            launch_path=button.launch_path or "/",
+            healthcheck_path=button.healthcheck_path,
+            verify_tls=button.verify_tls,
+        )
+
+
+@pytest_asyncio.fixture
+async def active_manager(monkeypatch):
+    app_settings = AppSettings(
+        title="Test Active",
+        secret_key="fedcba0987654321",
+        poll_interval_seconds=1,
+        http_probe_timeout=1,
+        http_probe_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
+    )
+    button = ButtonSettings(
+        id="button-one",
+        label="Button",
+        instance_name="instance-one",
+        url_scheme="http",
+        port=8080,
+        healthcheck_path="/health",
+    )
+    client = AlwaysActiveClient()
+    mgr = InstanceActionManager(app_settings, {button.id: button}, client)
+
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+    return mgr
+
+
 @pytest.mark.asyncio
 async def test_unshelve_workflow(manager):
-    status = await manager.start_unshelve("button-one")
+    status = await manager.start_unshelve("button-one", actor="tester")
     assert status.running
 
     task = manager._tasks["button-one"]
@@ -129,11 +201,42 @@ async def test_unshelve_workflow(manager):
 
 
 @pytest.mark.asyncio
+async def test_public_base_url_overrides_endpoint(monkeypatch):
+    app_settings = AppSettings(
+        title="Test Public URL",
+        secret_key="0123456789abcdef",
+        poll_interval_seconds=1,
+        http_probe_timeout=1,
+        http_probe_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
+    )
+    button = ButtonSettings(
+        id="button-one",
+        label="Button",
+        instance_name="instance-one",
+        url_scheme="http",
+        healthcheck_path="/health",
+        public_base_url="https://chat.example.com",
+    )
+    client = AlwaysActiveClient()
+    mgr = InstanceActionManager(app_settings, {button.id: button}, client)
+
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+
+    status = await mgr.refresh_openstack_status("button-one")
+    assert status.url == "https://chat.example.com/"
+
+
+@pytest.mark.asyncio
 async def test_start_unshelve_ignores_duplicate_requests(manager):
-    status = await manager.start_unshelve("button-one")
+    status = await manager.start_unshelve("button-one", actor="tester")
     task = manager._tasks["button-one"]
 
-    second_status = await manager.start_unshelve("button-one")
+    second_status = await manager.start_unshelve("button-one", actor="tester")
     assert second_status.running
     assert manager._tasks["button-one"] is task
 
@@ -144,7 +247,23 @@ async def test_start_unshelve_ignores_duplicate_requests(manager):
 @pytest.mark.asyncio
 async def test_unknown_button(manager):
     with pytest.raises(KeyError):
-        await manager.start_unshelve("missing")
+        await manager.start_unshelve("missing", actor="tester")
 
     with pytest.raises(KeyError):
         manager.get_status("missing")
+
+
+@pytest.mark.asyncio
+async def test_initial_active_status_exposes_launch_link(active_manager):
+    status = active_manager.get_status("button-one")
+    assert status.state == "active"
+    assert status.url == "http://203.0.113.10:8080/"
+    assert status.message.startswith("Instance status: Active")
+
+
+@pytest.mark.asyncio
+async def test_refresh_status_keeps_launch_link_when_active(active_manager):
+    refreshed = await active_manager.refresh_openstack_status("button-one")
+    assert refreshed.state == "active"
+    assert refreshed.url == "http://203.0.113.10:8080/"
+    assert "Instance status" in refreshed.message

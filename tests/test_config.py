@@ -16,11 +16,8 @@ def test_load_settings_success(tmp_path):
               poll_interval_seconds: 10
               http_probe_timeout: 5
               http_probe_attempts: 3
-            github:
-              client_id: cid
-              client_secret: secret
-              redirect_uri: http://localhost/callback
-              organization: acme
+              control_token: 0123456789abcdef
+              manual_shelve_path: /admin-shelve
             openstack:
               auth_url: https://example.com
               username: user
@@ -30,6 +27,13 @@ def test_load_settings_success(tmp_path):
               - id: button-one
                 label: App One
                 instance_name: instance-one
+            activity_log_path: /tmp/caddy.log
+            idle_timeout_minutes: 60
+            idle_poll_interval_seconds: 30
+            caddy_upstream_label: gpu
+            local_event_log: logs/events.jsonl
+            swift_event_container: null
+            swift_event_prefix: events
             """
         ).strip()
     )
@@ -37,7 +41,6 @@ def test_load_settings_success(tmp_path):
     settings = load_settings(str(config))
 
     assert settings.app.title == "Test"
-    assert settings.github.organization == "acme"
     assert settings.buttons[0].id == "button-one"
 
 
@@ -49,17 +52,19 @@ def test_load_settings_raises_on_invalid(tmp_path):
             app:
               title: Test
               secret_key: short
-            github:
-              client_id: cid
-              client_secret: secret
-              redirect_uri: http://localhost/callback
-              organization: acme
             openstack:
               auth_url: https://example.com
               username: user
               password: pass
               project_name: proj
             buttons: []
+            activity_log_path: /tmp/caddy.log
+            idle_timeout_minutes: 60
+            idle_poll_interval_seconds: 30
+            caddy_upstream_label: gpu
+            local_event_log: logs/events.jsonl
+            swift_event_container: null
+            swift_event_prefix: events
             """
         ).strip()
     )

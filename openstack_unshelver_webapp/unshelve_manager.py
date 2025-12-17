@@ -11,6 +11,7 @@ from openstack.compute.v2.server import Server
 from openstack.exceptions import ResourceNotFound, SDKException
 
 from .config import AppSettings, ButtonSettings
+from .event_logger import EventLogger
 from .openstack_client import InstanceEndpoint, OpenStackClient
 
 
@@ -25,6 +26,22 @@ def _utcnow() -> datetime:
 def _format_openstack_status(status: str) -> str:
     cleaned = (status or "UNKNOWN").replace("_", " ")
     return cleaned.strip().title() or "Unknown"
+
+
+def _normalise_state(status: str) -> str:
+    """Collapse OpenStack statuses into controller-friendly states."""
+    state = (status or "").upper()
+    if state in {"SHELVED", "SHELVED_OFFLOADED"}:
+        return "shelved"
+    if state in {"ACTIVE"}:
+        return "active"
+    if state in {"SHUTOFF"}:
+        return "off"
+    if state in {"BUILD", "REBUILD", "VERIFY_RESIZE"}:
+        return "booting"
+    if state in {"ERROR"}:
+        return "error"
+    return "unknown"
 
 
 @dataclass(slots=True)
@@ -61,10 +78,12 @@ class InstanceActionManager:
         app_settings: AppSettings,
         buttons: Dict[str, ButtonSettings],
         client: OpenStackClient,
+        event_logger: Optional[EventLogger] = None,
     ) -> None:
         self._app_settings = app_settings
         self._buttons = buttons
         self._client = client
+        self._event_logger = event_logger
         self._statuses: Dict[str, ButtonStatus] = {
             button_id: ButtonStatus(
                 button_id=button_id,
@@ -80,13 +99,28 @@ class InstanceActionManager:
         self._lock = asyncio.Lock()
         self._prime_initial_statuses()
 
+    @staticmethod
+    def _public_launch_url(button: ButtonSettings, endpoint: InstanceEndpoint) -> str:
+        path = button.launch_path or "/"
+        if button.public_base_url:
+            base = str(button.public_base_url).rstrip("/")
+            return f"{base}{path}"
+        return endpoint.launch_url
+
+    async def log_event(self, action: str, *, actor: str, instance_name: str, detail: Optional[str] = None) -> None:
+        if not self._event_logger:
+            return
+        await self._event_logger.log(action, actor=actor, instance_name=instance_name, detail=detail)
+
     def _prime_initial_statuses(self) -> None:
         for button_id, button in self._buttons.items():
+            message = "Unable to query OpenStack status right now."
+            state = self._statuses[button_id].state
+            url: Optional[str] = None
             try:
                 server = self._client.find_server(button.instance_name)
             except SDKException as exc:
                 _LOGGER.debug("Initial status refresh failed for %s: %s", button.instance_name, exc, exc_info=True)
-                message = "Unable to query OpenStack status right now."
             else:
                 if not server:
                     message = "Instance not found in OpenStack."
@@ -94,9 +128,16 @@ class InstanceActionManager:
                     raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
                     display_status = _format_openstack_status(raw_status)
                     message = f"Instance status: {display_status}."
+                    state = _normalise_state(raw_status)
+                    if state in {"active", "ready"}:
+                        endpoint = self._client.build_endpoint(server, button)
+                        if endpoint:
+                            url = self._public_launch_url(button, endpoint)
             self._statuses[button_id] = replace(
                 self._statuses[button_id],
+                state=state,
                 message=message,
+                url=url,
             )
 
     def get_status(self, button_id: str) -> ButtonStatus:
@@ -131,12 +172,21 @@ class InstanceActionManager:
 
         raw_status = (getattr(server, "status", None) or "").upper() or "UNKNOWN"
         display_status = _format_openstack_status(raw_status)
+        state = _normalise_state(raw_status)
+        endpoint_url: Optional[str] = None
+        if state in {"active", "ready"}:
+            endpoint = self._client.build_endpoint(server, button)
+            if endpoint:
+                endpoint_url = self._public_launch_url(button, endpoint)
+
         return await self._update_status(
             button_id,
             message=f"Instance status: {display_status}.",
+            state=state,
+            url=endpoint_url,
         )
 
-    async def start_unshelve(self, button_id: str) -> ButtonStatus:
+    async def start_unshelve(self, button_id: str, *, actor: str, reason: Optional[str] = None) -> ButtonStatus:
         button = self._buttons.get(button_id)
         if not button:
             raise KeyError(f"Unknown button id '{button_id}'")
@@ -157,9 +207,37 @@ class InstanceActionManager:
                 last_updated=_utcnow(),
             )
             self._statuses[button_id] = updated
-            job = asyncio.create_task(self._run_unshelve(button))
+            job = asyncio.create_task(self._run_unshelve(button, actor=actor, reason=reason))
             self._tasks[button_id] = job
             job.add_done_callback(lambda t: asyncio.create_task(self._clear_task(button_id, t)))
+            await self.log_event("unshelve_requested", actor=actor, instance_name=button.instance_name, detail=reason)
+            return updated
+
+    async def start_shelve(self, button_id: str, *, actor: str, reason: Optional[str] = None) -> ButtonStatus:
+        button = self._buttons.get(button_id)
+        if not button:
+            raise KeyError(f"Unknown button id '{button_id}'")
+
+        async with self._lock:
+            task = self._tasks.get(button_id)
+            current = self._statuses[button_id]
+            if task and not task.done():
+                return current
+            updated = replace(
+                current,
+                state="shelving",
+                message="Starting shelve workflow…",
+                running=True,
+                http_ready=False,
+                error=None,
+                url=current.url,
+                last_updated=_utcnow(),
+            )
+            self._statuses[button_id] = updated
+            job = asyncio.create_task(self._run_shelve(button, actor=actor, reason=reason))
+            self._tasks[button_id] = job
+            job.add_done_callback(lambda t: asyncio.create_task(self._clear_task(button_id, t)))
+            await self.log_event("shelve_requested", actor=actor, instance_name=button.instance_name, detail=reason)
             return updated
 
     async def _clear_task(self, button_id: str, task: asyncio.Task) -> None:
@@ -198,7 +276,7 @@ class InstanceActionManager:
             self._statuses[button_id] = new_status
             return new_status
 
-    async def _run_unshelve(self, button: ButtonSettings) -> None:
+    async def _run_unshelve(self, button: ButtonSettings, *, actor: str, reason: Optional[str]) -> None:
         button_id = button.id
         try:
             server = await asyncio.to_thread(self._client.find_server, button.instance_name)
@@ -236,12 +314,13 @@ class InstanceActionManager:
                     http_ready=False,
                 )
                 return
+            display_url = self._public_launch_url(button, endpoint)
 
             await self._update_status(
                 button_id,
                 state="active",
                 message="Instance ACTIVE. Checking application availability…",
-                url=endpoint.launch_url,
+                url=display_url,
                 http_ready=False,
             )
 
@@ -251,18 +330,25 @@ class InstanceActionManager:
                     button_id,
                     state="ready",
                     message="Instance is ready.",
-                    url=endpoint.launch_url,
+                    url=display_url,
                     http_ready=True,
                     error=None,
                 )
+                await self.log_event("unshelve_complete", actor=actor, instance_name=button.instance_name, detail=reason)
             else:
                 await self._update_status(
                     button_id,
                     state="active",
                     message="Instance ACTIVE but application is not responding.",
-                    url=endpoint.launch_url,
+                    url=display_url,
                     http_ready=False,
                     error=detail,
+                )
+                await self.log_event(
+                    "unshelve_incomplete",
+                    actor=actor,
+                    instance_name=button.instance_name,
+                    detail=detail or "http probe failed",
                 )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.exception("Unshelve workflow for %s failed", button.instance_name, exc_info=exc)
@@ -273,6 +359,58 @@ class InstanceActionManager:
                 http_ready=False,
                 error=str(exc),
             )
+            await self.log_event("workflow_failed", actor=actor, instance_name=button.instance_name, detail=str(exc))
+        finally:
+            await self._update_status(button_id, running=False)
+
+    async def _run_shelve(self, button: ButtonSettings, *, actor: str, reason: Optional[str]) -> None:
+        button_id = button.id
+        try:
+            server = await asyncio.to_thread(self._client.find_server, button.instance_name)
+            if not server:
+                raise ResourceNotFound(f"Instance '{button.instance_name}' not found")
+
+            status = (server.status or "").upper()
+            if status in {"SHELVED", "SHELVED_OFFLOADED"}:
+                await self._update_status(
+                    button_id,
+                    state="shelved",
+                    message="Instance already shelved.",
+                    http_ready=False,
+                    url=None,
+                )
+                await self.log_event("shelve_complete", actor=actor, instance_name=button.instance_name, detail="already shelved")
+                return
+
+            await self._update_status(
+                button_id,
+                state="shelving",
+                message="Requesting shelve from OpenStack…",
+            )
+            try:
+                await asyncio.to_thread(self._client.shelve_server, server.id)
+            except SDKException as exc:
+                raise RuntimeError(f"Failed to shelve instance: {exc}") from exc
+
+            await self._wait_until_shelved(button_id, server.id)
+            await self._update_status(
+                button_id,
+                state="shelved",
+                message="Instance is shelved and ready for the next wake-up.",
+                url=None,
+                http_ready=False,
+            )
+            await self.log_event("shelve_complete", actor=actor, instance_name=button.instance_name, detail=reason)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.exception("Shelve workflow for %s failed", button.instance_name, exc_info=exc)
+            await self._update_status(
+                button_id,
+                state="error",
+                message="Shelve workflow failed.",
+                http_ready=False,
+                error=str(exc),
+            )
+            await self.log_event("workflow_failed", actor=actor, instance_name=button.instance_name, detail=str(exc))
         finally:
             await self._update_status(button_id, running=False)
 
@@ -300,6 +438,24 @@ class InstanceActionManager:
             )
             await asyncio.sleep(poll)
             server = await asyncio.to_thread(self._client.get_server, server_id)
+
+    async def _wait_until_shelved(
+        self,
+        button_id: str,
+        server_id: str,
+    ) -> None:
+        poll = self._app_settings.poll_interval_seconds
+        while True:
+            server = await asyncio.to_thread(self._client.get_server, server_id)
+            status = (getattr(server, "status", None) or "").upper()
+            if status in {"SHELVED", "SHELVED_OFFLOADED"}:
+                return
+            await self._update_status(
+                button_id,
+                state="shelving",
+                message=f"Shelve request in progress (status {status or 'UNKNOWN'}). Re-checking in {poll}s…",
+            )
+            await asyncio.sleep(poll)
 
     async def _probe_http(
         self,

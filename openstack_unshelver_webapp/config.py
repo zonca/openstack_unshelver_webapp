@@ -22,29 +22,12 @@ class AppSettings(BaseModel):
     poll_interval_seconds: int = Field(default=10, ge=1)
     http_probe_timeout: float = Field(default=5.0, gt=0)
     http_probe_attempts: int = Field(default=12, ge=1)
-
-
-class GitHubSettings(BaseModel):
-    """Configuration required for GitHub OAuth."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    client_id: str
-    client_secret: str
-    redirect_uri: AnyUrl
-    organization: str
-    scope: List[str] = Field(default_factory=lambda: ["read:user", "read:org"])
-
-    @field_validator("scope")
-    @classmethod
-    def ensure_scope(cls, value: List[str]) -> List[str]:
-        if not value:
-            raise ValueError("At least one OAuth scope is required")
-        # GitHub scope names are case-sensitive and should not contain whitespace
-        invalid = [scope for scope in value if " " in scope or not scope]
-        if invalid:
-            raise ValueError(f"Invalid GitHub OAuth scopes: {invalid}")
-        return value
+    control_token: str = Field(min_length=16, description="Shared secret for /control and admin endpoints")
+    manual_shelve_path: str = Field(
+        default="/admin-shelve",
+        description="Hidden path that exposes manual shelve controls",
+        pattern=r"^/[-/a-zA-Z0-9_]+$",
+    )
 
 
 class OpenStackSettings(BaseModel):
@@ -88,6 +71,10 @@ class ButtonSettings(BaseModel):
     instance_name: str
     description: Optional[str] = None
     preferred_networks: Optional[List[str]] = None
+    public_base_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Optional public hostname/URL served via the controller (used for links shown to users)",
+    )
     url_scheme: str = Field(default="http", pattern=r"^[a-zA-Z][a-zA-Z0-9+.-]*$")
     port: Optional[int] = Field(default=None, ge=1, le=65535)
     healthcheck_path: str = Field(default="/")
@@ -115,14 +102,22 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     app: AppSettings
-    github: GitHubSettings
     openstack: OpenStackSettings
     buttons: List[ButtonSettings]
+    activity_log_path: str = Field(
+        description="Path to the Caddy JSON access log used for idle detection",
+    )
+    idle_timeout_minutes: int = Field(default=60, ge=5)
+    idle_poll_interval_seconds: int = Field(default=30, ge=5)
+    caddy_upstream_label: str = Field(default="gpu", description="Value matched against log upstream.name")
+    local_event_log: str = Field(default="logs/unshelver-events.jsonl")
+    swift_event_container: Optional[str] = Field(default=None)
+    swift_event_prefix: str = Field(default="unshelver-events")
 
     @model_validator(mode="after")
     def validate_buttons(self) -> "Settings":
-        if not self.buttons:
-            raise ValueError("At least one button must be configured")
+        if len(self.buttons) != 1:
+            raise ValueError("Exactly one button must be configured for the controller deployment")
         ids = [button.id for button in self.buttons]
         if len(ids) != len(set(ids)):
             raise ValueError("Button IDs must be unique")
