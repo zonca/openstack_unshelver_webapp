@@ -121,20 +121,9 @@ async def home(request: Request):
 
     chat_url = default_button.public_base_url
     if chat_url:
-        chat_call_to_action = P(
-            "When the card turns green, open ",
-            A(
-                chat_url,
-                href=chat_url,
-                target="_blank",
-                rel="noopener",
-            ),
-            " in your browser—the chat UI lives there and keeps using this same always-on gateway."
-        )
+        chat_call_to_action = P("When the card turns green, open the chat link that appears on the status card below.")
     else:
-        chat_call_to_action = P(
-            "When the card turns green, follow the chat link that appears on the status card below."
-        )
+        chat_call_to_action = P("When the card turns green, follow the chat link that appears on the status card below.")
 
     hero = Div(
         H2("Cosmosage Chat Launcher"),
