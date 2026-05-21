@@ -84,6 +84,49 @@ class OpenStackClient:
         finally:
             conn.close()
 
+    def get_last_instance_action(self, server_id: str, action: str) -> Optional[dict]:
+        """Return the most recent instance action of the given type, or None.
+
+        Uses the ``os-instance-actions`` API (microversion 2.51+) which
+        includes event-level details.  Returns a dict with at least
+        ``action``, ``message``, and ``start_time`` keys.
+        """
+        conn = self.create_connection()
+        try:
+            token = conn.session.get_token()
+            import requests as _requests
+
+            headers = {
+                "X-Auth-Token": token,
+                "OpenStack-API-Version": "compute 2.51",
+            }
+            # Get the compute public endpoint URL from the service catalog
+            compute_ep = conn.session.get_endpoint(
+                service_type="compute", interface="public", region_name="IU",
+            )
+            url = f"{compute_ep}/servers/{server_id}/os-instance-actions"
+            resp = _requests.get(url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                _LOGGER.debug("instance-actions API returned %s", resp.status_code)
+                return None
+            actions = resp.json().get("instanceActions", [])
+            for entry in actions:
+                if entry.get("action") == action:
+                    # Fetch detailed view with events
+                    req_id = entry.get("request_id", "")
+                    if req_id:
+                        detail_url = f"{url}/{req_id}"
+                        detail_resp = _requests.get(detail_url, headers=headers, timeout=15)
+                        if detail_resp.status_code == 200:
+                            return detail_resp.json().get("instanceAction", entry)
+                    return entry
+            return None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Failed to query instance actions for %s: %s", server_id, exc)
+            return None
+        finally:
+            conn.close()
+
     def build_endpoint(self, server: Server, button: ButtonSettings) -> Optional[InstanceEndpoint]:
         address = select_address(server, button.preferred_networks)
         if not address:

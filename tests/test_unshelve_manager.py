@@ -364,3 +364,86 @@ async def test_unshelve_timeout(monkeypatch):
     final = mgr.get_status("button-one")
     assert final.state == "error"
     assert "did not become ACTIVE" in (final.error or "")
+
+
+@pytest.mark.asyncio
+async def test_unshelve_scheduling_failure_detected(monkeypatch):
+    """When OpenStack reports the unshelve action as Error (scheduling failure),
+    the workflow should detect it and report a useful error message."""
+    app_settings = AppSettings(
+        title="Test Scheduling Failure",
+        secret_key="1234567890abcdef",
+        poll_interval_seconds=1,
+        http_probe_timeout=1,
+        http_probe_attempts=1,
+        unshelve_timeout_minutes=30,
+        api_retry_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
+    )
+    button = ButtonSettings(
+        id="button-one",
+        label="Button",
+        instance_name="instance-one",
+        url_scheme="http",
+        healthcheck_path="/health",
+    )
+
+    class StuckShelvedClient(DummyClient):
+        """Server stays SHELVED_OFFLOADED with no task_state (scheduler failure)."""
+        def __init__(self):
+            super().__init__()
+            self._action_checked = False
+
+        def find_server(self, instance_name):
+            if instance_name != "instance-one":
+                return None
+            srv = DummyServer("server-1", "SHELVED_OFFLOADED")
+            return srv
+
+        def get_server(self, server_id):
+            srv = DummyServer("server-1", "SHELVED_OFFLOADED")
+            # Simulate no task_state (scheduler hasn't picked it up)
+            srv.__dict__["OS-EXT-STS:task_state"] = None
+            return srv
+
+        def get_last_instance_action(self, server_id, action):
+            """Simulate OpenStack reporting the unshelve as Error."""
+            return {
+                "action": "unshelve",
+                "message": "Error",
+                "start_time": "2026-05-21T08:21:23.000000",
+                "events": [
+                    {
+                        "event": "schedule_instances",
+                        "start_time": "2026-05-21T08:21:24.000000",
+                        "finish_time": "2026-05-21T08:21:27.000000",
+                        "result": "Error",
+                    }
+                ],
+            }
+
+    client = StuckShelvedClient()
+    mgr = InstanceActionManager(app_settings, {button.id: button}, client)
+
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def fast_sleep(_: float):
+        return None
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: StubHttpClient())
+
+    status = await mgr.start_unshelve("button-one", actor="tester")
+    assert status.running
+
+    task = mgr._tasks["button-one"]
+    await task
+    await asyncio.sleep(0)
+
+    final = mgr.get_status("button-one")
+    assert final.state == "error"
+    assert "failed to schedule" in (final.error or "").lower()
+    assert "schedule_instances" in (final.error or "")

@@ -451,6 +451,12 @@ class InstanceActionManager:
         max_api_retries = self._app_settings.api_retry_attempts
         deadline = _utcnow() + timeout
         server = initial
+        # Track how many consecutive polls show SHELVED_OFFLOADED with no
+        # task_state change after an unshelve was requested.  If this
+        # persists for several cycles, check the instance-actions API to
+        # see whether the scheduler already reported the unshelve as Error.
+        _stale_shelved_count = 0
+        _STALE_SHELVED_THRESHOLD = 3  # check actions after this many stale polls
         while True:
             if _utcnow() > deadline:
                 raise RuntimeError(
@@ -459,10 +465,35 @@ class InstanceActionManager:
             if server is None:
                 server = await self._poll_server_with_retry(button_id, server_id, max_api_retries)
             status = (getattr(server, "status", None) or "").upper()
+            task_state = getattr(server, "OS-EXT-STS:task_state", None)
             if status == "ACTIVE":
                 return server
             if status in {"ERROR", "UNKNOWN"}:
                 raise RuntimeError(f"Instance entered {status} state")
+
+            # Detect scheduling failure: instance stays SHELVED_OFFLOADED with
+            # no task_state after we sent an unshelve request.
+            if status in {"SHELVED", "SHELVED_OFFLOADED"} and task_state is None:
+                _stale_shelved_count += 1
+                if _stale_shelved_count >= _STALE_SHELVED_THRESHOLD:
+                    action_info = await asyncio.to_thread(
+                        self._client.get_last_instance_action, server_id, "unshelve",
+                    )
+                    if action_info and action_info.get("message") == "Error":
+                        events = action_info.get("events", [])
+                        event_detail = ""
+                        for ev in events:
+                            if ev.get("result") == "Error":
+                                event_detail = ev.get("event", "unknown")
+                                break
+                        msg = "OpenStack failed to schedule the unshelve"
+                        if event_detail:
+                            msg += f" (failed at: {event_detail})"
+                        msg += ". This is typically a GPU resource availability issue on Jetstream2 — try again later or contact support."
+                        raise RuntimeError(msg)
+            else:
+                _stale_shelved_count = 0
+
             await self._update_status(
                 button_id,
                 state="booting",
