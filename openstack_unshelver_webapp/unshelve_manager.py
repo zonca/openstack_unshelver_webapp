@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -17,6 +17,24 @@ from .openstack_client import InstanceEndpoint, OpenStackClient
 
 _LOGGER = logging.getLogger(__name__)
 _UNSET = object()
+
+_TRANSIENT_ERROR_SUBSTRINGS = (
+    "NameResolutionError",
+    "Temporary failure in name resolution",
+    "Connection aborted",
+    "RemoteDisconnected",
+    "Max retries exceeded",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "Connection reset",
+    "timed out",
+)
+
+
+def _is_transient_api_error(exc: BaseException) -> bool:
+    """Return True if the exception looks like a transient network/API error worth retrying."""
+    msg = str(exc).lower()
+    return any(s.lower() in msg for s in _TRANSIENT_ERROR_SUBSTRINGS)
 
 
 def _utcnow() -> datetime:
@@ -153,7 +171,13 @@ class InstanceActionManager:
 
         status = self._statuses[button_id]
         if status.running:
-            return status
+            # Check if the task is actually still alive — recover from stale state
+            task = self._tasks.get(button_id)
+            if task and not task.done():
+                return status
+            _LOGGER.warning("Stale running flag detected for %s, clearing it", button_id)
+            await self._update_status(button_id, running=False)
+            status = self._statuses[button_id]
 
         try:
             server = await asyncio.to_thread(self._client.find_server, button.instance_name)
@@ -278,8 +302,9 @@ class InstanceActionManager:
 
     async def _run_unshelve(self, button: ButtonSettings, *, actor: str, reason: Optional[str]) -> None:
         button_id = button.id
+        max_api_retries = self._app_settings.api_retry_attempts
         try:
-            server = await asyncio.to_thread(self._client.find_server, button.instance_name)
+            server = await self._find_server_with_retry(button, max_api_retries)
             if not server:
                 raise ResourceNotFound(f"Instance '{button.instance_name}' not found")
 
@@ -293,7 +318,7 @@ class InstanceActionManager:
             if status in {"SHELVED", "SHELVED_OFFLOADED"}:
                 await self._update_status(button_id, message="Requesting unshelve from OpenStack…")
                 try:
-                    await asyncio.to_thread(self._client.unshelve_server, server.id)
+                    await self._unshelve_with_retry(server.id, max_api_retries)
                 except SDKException as exc:
                     raise RuntimeError(f"Failed to unshelve instance: {exc}") from exc
             else:
@@ -422,10 +447,17 @@ class InstanceActionManager:
         initial: Optional[Server] = None,
     ) -> Server:
         poll = self._app_settings.poll_interval_seconds
+        timeout = timedelta(minutes=self._app_settings.unshelve_timeout_minutes)
+        max_api_retries = self._app_settings.api_retry_attempts
+        deadline = _utcnow() + timeout
         server = initial
         while True:
+            if _utcnow() > deadline:
+                raise RuntimeError(
+                    f"Instance did not become ACTIVE within {self._app_settings.unshelve_timeout_minutes} minutes"
+                )
             if server is None:
-                server = await asyncio.to_thread(self._client.get_server, server_id)
+                server = await self._poll_server_with_retry(button_id, server_id, max_api_retries)
             status = (getattr(server, "status", None) or "").upper()
             if status == "ACTIVE":
                 return server
@@ -437,7 +469,7 @@ class InstanceActionManager:
                 message=f"Instance status: {status or 'UNKNOWN'}. Re-checking in {poll}s…",
             )
             await asyncio.sleep(poll)
-            server = await asyncio.to_thread(self._client.get_server, server_id)
+            server = None  # Force re-fetch on next iteration
 
     async def _wait_until_shelved(
         self,
@@ -445,8 +477,15 @@ class InstanceActionManager:
         server_id: str,
     ) -> None:
         poll = self._app_settings.poll_interval_seconds
+        timeout = timedelta(minutes=self._app_settings.unshelve_timeout_minutes)
+        max_api_retries = self._app_settings.api_retry_attempts
+        deadline = _utcnow() + timeout
         while True:
-            server = await asyncio.to_thread(self._client.get_server, server_id)
+            if _utcnow() > deadline:
+                raise RuntimeError(
+                    f"Instance did not become SHELVED within {self._app_settings.unshelve_timeout_minutes} minutes"
+                )
+            server = await self._poll_server_with_retry(button_id, server_id, max_api_retries)
             status = (getattr(server, "status", None) or "").upper()
             if status in {"SHELVED", "SHELVED_OFFLOADED"}:
                 return
@@ -456,6 +495,74 @@ class InstanceActionManager:
                 message=f"Shelve request in progress (status {status or 'UNKNOWN'}). Re-checking in {poll}s…",
             )
             await asyncio.sleep(poll)
+
+    async def _find_server_with_retry(
+        self,
+        button: ButtonSettings,
+        max_retries: int,
+    ) -> Optional[Server]:
+        """Find a server with retries on transient API errors."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await asyncio.to_thread(self._client.find_server, button.instance_name)
+            except SDKException as exc:
+                last_exc = exc
+                if _is_transient_api_error(exc) and attempt < max_retries:
+                    _LOGGER.warning(
+                        "Transient API error finding server %s (attempt %d/%d): %s",
+                        button.instance_name, attempt, max_retries, exc,
+                    )
+                    await asyncio.sleep(self._app_settings.poll_interval_seconds)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    async def _unshelve_with_retry(
+        self,
+        server_id: str,
+        max_retries: int,
+    ) -> None:
+        """Request unshelve with retries on transient API errors."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                await asyncio.to_thread(self._client.unshelve_server, server_id)
+                return
+            except SDKException as exc:
+                last_exc = exc
+                if _is_transient_api_error(exc) and attempt < max_retries:
+                    _LOGGER.warning(
+                        "Transient API error unshelving server %s (attempt %d/%d): %s",
+                        server_id, attempt, max_retries, exc,
+                    )
+                    await asyncio.sleep(self._app_settings.poll_interval_seconds)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    async def _poll_server_with_retry(
+        self,
+        button_id: str,
+        server_id: str,
+        max_retries: int,
+    ) -> Server:
+        """Fetch server status with retries on transient API errors."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await asyncio.to_thread(self._client.get_server, server_id)
+            except SDKException as exc:
+                last_exc = exc
+                if _is_transient_api_error(exc) and attempt < max_retries:
+                    _LOGGER.warning(
+                        "Transient API error polling server %s (attempt %d/%d): %s",
+                        server_id, attempt, max_retries, exc,
+                    )
+                    await asyncio.sleep(self._app_settings.poll_interval_seconds)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
 
     async def _probe_http(
         self,

@@ -22,6 +22,14 @@ class AppSettings(BaseModel):
     poll_interval_seconds: int = Field(default=10, ge=1)
     http_probe_timeout: float = Field(default=5.0, gt=0)
     http_probe_attempts: int = Field(default=12, ge=1)
+    unshelve_timeout_minutes: int = Field(
+        default=30, ge=1,
+        description="Maximum minutes to wait for an instance to become ACTIVE before failing the workflow",
+    )
+    api_retry_attempts: int = Field(
+        default=3, ge=1,
+        description="Number of retries on transient OpenStack API errors (DNS, connection drops)",
+    )
     control_token: str = Field(min_length=16, description="Shared secret for /control and admin endpoints")
     manual_shelve_path: str = Field(
         default="/admin-shelve",

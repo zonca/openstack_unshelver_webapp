@@ -6,7 +6,8 @@ import pytest_asyncio
 
 from openstack_unshelver_webapp.config import AppSettings, ButtonSettings
 from openstack_unshelver_webapp.openstack_client import InstanceEndpoint
-from openstack_unshelver_webapp.unshelve_manager import ButtonStatus, InstanceActionManager
+from openstack_unshelver_webapp.unshelve_manager import ButtonStatus, InstanceActionManager, _utcnow
+from dataclasses import replace
 
 
 class DummyServer:
@@ -267,3 +268,99 @@ async def test_refresh_status_keeps_launch_link_when_active(active_manager):
     assert refreshed.state == "active"
     assert refreshed.url == "http://203.0.113.10:8080/"
     assert "Instance status" in refreshed.message
+
+
+@pytest.mark.asyncio
+async def test_stale_running_flag_recovered(manager):
+    """When running=True but the task is done, refresh should clear the stale flag."""
+    # Manually set running=True without a live task
+    manager._statuses["button-one"] = replace(
+        manager._statuses["button-one"],
+        running=True,
+        state="unshelving",
+        message="Working…",
+    )
+    # No task in _tasks dict — simulates the stuck state from the bug
+    status = await manager.refresh_openstack_status("button-one")
+    # The stale running flag should have been cleared
+    assert status.running is False
+
+
+@pytest.mark.asyncio
+async def test_stale_running_flag_with_done_task(manager):
+    """When running=True but the task is already done, refresh should clear the stale flag."""
+    # Start an unshelve, let it complete, then manually corrupt the running flag
+    status = await manager.start_unshelve("button-one", actor="tester")
+    task = manager._tasks["button-one"]
+    await task
+    await asyncio.sleep(0)
+
+    # Simulate the running flag getting stuck
+    manager._statuses["button-one"] = replace(
+        manager._statuses["button-one"],
+        running=True,
+    )
+
+    refreshed = await manager.refresh_openstack_status("button-one")
+    assert refreshed.running is False
+
+
+@pytest.mark.asyncio
+async def test_unshelve_timeout(monkeypatch):
+    """The unshelve workflow should fail if the instance never becomes ACTIVE within the timeout."""
+    app_settings = AppSettings(
+        title="Test Timeout",
+        secret_key="1234567890abcdef",
+        poll_interval_seconds=1,
+        http_probe_timeout=1,
+        http_probe_attempts=1,
+        unshelve_timeout_minutes=1,
+        api_retry_attempts=1,
+        control_token="abcdef0123456789",
+        manual_shelve_path="/admin-shelve",
+    )
+    button = ButtonSettings(
+        id="button-one",
+        label="Button",
+        instance_name="instance-one",
+        url_scheme="http",
+        healthcheck_path="/health",
+    )
+
+    class StuckClient(DummyClient):
+        """Server that stays SHELVED forever (never becomes ACTIVE)."""
+        def get_server(self, server_id):
+            return DummyServer("server-1", "SHELVED")
+
+    client = StuckClient()
+    mgr = InstanceActionManager(app_settings, {button.id: button}, client)
+
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    # Advance time by 2 minutes each sleep call to exceed the 1-minute timeout
+    async def advance_time_sleep(seconds):
+        import openstack_unshelver_webapp.unshelve_manager as mgr_mod
+        # Advance the _utcnow function by 2 minutes each time
+        mgr_mod._utcnow = (lambda _original=mgr_mod._utcnow: _original() + timedelta(minutes=2))
+
+    from datetime import timedelta
+    import openstack_unshelver_webapp.unshelve_manager as mgr_mod
+    original_utcnow = mgr_mod._utcnow
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+    monkeypatch.setattr(asyncio, "sleep", advance_time_sleep)
+
+    status = await mgr.start_unshelve("button-one", actor="tester")
+    assert status.running
+
+    task = mgr._tasks["button-one"]
+    await task
+    await asyncio.sleep(0)
+
+    # Restore _utcnow
+    mgr_mod._utcnow = original_utcnow
+
+    final = mgr.get_status("button-one")
+    assert final.state == "error"
+    assert "did not become ACTIVE" in (final.error or "")
