@@ -121,6 +121,10 @@ class Settings(BaseModel):
     local_event_log: str = Field(default="logs/unshelver-events.jsonl")
     swift_event_container: Optional[str] = Field(default=None)
     swift_event_prefix: str = Field(default="unshelver-events")
+    notification_email: Optional[str] = Field(
+        default=None,
+        description="Email address to notify on unshelve failures (uses local sendmail)",
+    )
 
     @model_validator(mode="after")
     def validate_buttons(self) -> "Settings":

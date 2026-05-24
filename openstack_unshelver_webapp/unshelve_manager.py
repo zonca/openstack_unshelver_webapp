@@ -12,6 +12,7 @@ from openstack.exceptions import ResourceNotFound, SDKException
 
 from .config import AppSettings, ButtonSettings
 from .event_logger import EventLogger
+from .email_notifier import send_failure_notification
 from .openstack_client import InstanceEndpoint, OpenStackClient
 
 
@@ -385,6 +386,14 @@ class InstanceActionManager:
                 error=str(exc),
             )
             await self.log_event("workflow_failed", actor=actor, instance_name=button.instance_name, detail=str(exc))
+            # Send email notification on unshelve failure
+            if self._app_settings.notification_email:
+                await asyncio.to_thread(
+                    send_failure_notification,
+                    recipient=self._app_settings.notification_email,
+                    instance_name=button.instance_name,
+                    error_message=str(exc),
+                )
         finally:
             await self._update_status(button_id, running=False)
 

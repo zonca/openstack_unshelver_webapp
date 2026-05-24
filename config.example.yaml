@@ -37,3 +37,7 @@ caddy_upstream_label: "gpu-backend"
 local_event_log: "logs/unshelver-events.jsonl"
 swift_event_container: "unshelver-events"
 swift_event_prefix: "unshelver-events"
+
+# Email address to notify when unshelve fails (e.g., GPU capacity shortage).
+# Requires Postfix running on the controller VM.
+# notification_email: "admin@example.com"
